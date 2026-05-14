@@ -62,7 +62,7 @@ class Embedder:
         log.info("chunks_embedded", count=len(chunks), model=self._model_name)
         return [
             EmbeddedChunk(
-                chunk=chunk,
+                chunk=chunk.model_dump(),
                 embedding=vec.tolist(),
                 model_name=self._model_name,
             )
