@@ -1,0 +1,13 @@
+google-genai
+sentence-transformers
+qdrant-client
+fastapi
+uvicorn
+streamlit
+PyMuPDF
+python-dotenv
+pydantic
+tiktoken
+tqdm
+structlog
+pytest
