@@ -15,7 +15,7 @@ from src.models.schemas import RetrievedChunk
 load_dotenv()
 log = structlog.get_logger()
 
-_RERANK_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash"]
+_RERANK_MODELS = ["gemini-2.5-flash"]
 # Truncate each chunk to this length when building the re-rank prompt so the
 # 15-chunk prompt stays well under Gemini's context limit.
 _RERANK_CHUNK_PREVIEW = 500

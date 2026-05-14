@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -123,6 +124,63 @@ def _bust_doc_cache() -> None:
     _fetch_documents.clear()
 
 
+def _rate_limit_message(exc: Exception) -> str:
+    """Return a user-friendly message for Gemini 429 errors."""
+    m = re.search(r"retryDelay.*?(\d+)s", str(exc))
+    wait = int(m.group(1)) if m else 30
+    return (
+        f"**Gemini quota reached.** Please wait ~{wait} seconds and try again. "
+        "If this keeps happening, check that your API key has billing enabled at "
+        "[Google AI Studio](https://aistudio.google.com)."
+    )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_query(question: str, doc_filter: str | None, top_k: int) -> dict | str:
+    """Run retrieve + generate; return a serialisable dict or an error string."""
+    try:
+        chunks = _get_retriever().retrieve(
+            question, top_k_final=top_k, document_filter=doc_filter
+        )
+        result = _get_generator().generate(question, chunks)
+        return {
+            "answer": result.answer,
+            "citations": [
+                {"document_name": c.document_name, "page_number": c.page_number, "source_text": c.source_text}
+                for c in result.citations
+            ],
+            "model_used": result.model_used,
+            "chunks_used": result.chunks_used,
+        }
+    except Exception as exc:
+        if "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc):
+            return f"RATE_LIMIT:{exc}"
+        return f"ERROR:{exc}"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_compare(doc_a: str, doc_b: str, topics: tuple[str, ...]) -> dict | str:
+    """Run compare; return a serialisable dict or an error string."""
+    try:
+        result = _get_comparator().compare(doc_a, doc_b, list(topics))
+        return {
+            "comparison": result.comparison,
+            "citations_a": [
+                {"page_number": c.page_number, "source_text": c.source_text}
+                for c in result.citations_a
+            ],
+            "citations_b": [
+                {"page_number": c.page_number, "source_text": c.source_text}
+                for c in result.citations_b
+            ],
+            "model_used": result.model_used,
+        }
+    except Exception as exc:
+        if "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc):
+            return f"RATE_LIMIT:{exc}"
+        return f"ERROR:{exc}"
+
+
 # ── Sidebar ────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -239,35 +297,31 @@ with tab_ask:
 
     if st.button("Ask ▶", type="primary", disabled=not question.strip()):
         with st.spinner("Retrieving and generating …"):
-            try:
-                chunks = _get_retriever().retrieve(
-                    question,
-                    top_k_final=int(top_k),
-                    document_filter=doc_filter,
-                )
-                result = _get_generator().generate(question, chunks)
-            except Exception as exc:
-                st.error(f"Error: {exc}")
-                result = None
+            raw = _cached_query(question.strip(), doc_filter, int(top_k))
 
-        if result is not None:
+        if isinstance(raw, str) and raw.startswith("RATE_LIMIT:"):
+            st.warning(_rate_limit_message(raw[len("RATE_LIMIT:"):]))
+        elif isinstance(raw, str) and raw.startswith("ERROR:"):
+            st.error(raw[len("ERROR:"):])
+        else:
             st.markdown("---")
             st.markdown("#### Answer")
-            st.markdown(result.answer)
+            st.markdown(raw["answer"])
 
-            if result.citations:
-                st.markdown(f"#### 📎 Sources ({len(result.citations)})")
-                for c in result.citations:
-                    label = f"📄 **{c.document_name}** — page {c.page_number}"
+            citations = raw.get("citations", [])
+            if citations:
+                st.markdown(f"#### 📎 Sources ({len(citations)})")
+                for c in citations:
+                    label = f"📄 **{c['document_name']}** — page {c['page_number']}"
                     with st.expander(label):
                         st.markdown(
-                            f"<div class='citation-box'>{c.source_text}</div>",
+                            f"<div class='citation-box'>{c['source_text']}</div>",
                             unsafe_allow_html=True,
                         )
 
             st.caption(
-                f"Model: `{result.model_used}` · "
-                f"Chunks used: {result.chunks_used}"
+                f"Model: `{raw.get('model_used', 'n/a')}` · "
+                f"Chunks used: {raw.get('chunks_used', 0)}"
             )
 
 
@@ -298,37 +352,40 @@ with tab_compare:
 
         if st.button("Compare ▶", type="primary"):
             with st.spinner(f"Comparing {doc_a}  vs  {doc_b} …"):
-                try:
-                    result = _get_comparator().compare(doc_a, doc_b, topics)
-                except Exception as exc:
-                    st.error(f"Error: {exc}")
-                    result = None
+                raw = _cached_compare(doc_a, doc_b, tuple(topics))
 
-            if result is not None:
+            short_a = doc_a[:30] + "…" if len(doc_a) > 30 else doc_a
+            short_b = doc_b[:30] + "…" if len(doc_b) > 30 else doc_b
+
+            if isinstance(raw, str) and raw.startswith("RATE_LIMIT:"):
+                st.warning(_rate_limit_message(raw[len("RATE_LIMIT:"):]))
+            elif isinstance(raw, str) and raw.startswith("ERROR:"):
+                st.error(raw[len("ERROR:"):])
+            else:
                 st.markdown("---")
-                short_a = doc_a[:30] + "…" if len(doc_a) > 30 else doc_a
-                short_b = doc_b[:30] + "…" if len(doc_b) > 30 else doc_b
                 st.markdown(f"#### {short_a}  vs  {short_b}")
-                st.markdown(result.comparison)
+                st.markdown(raw["comparison"])
 
-                if result.citations_a or result.citations_b:
+                cit_a = raw.get("citations_a", [])
+                cit_b = raw.get("citations_b", [])
+                if cit_a or cit_b:
                     col_ca, col_cb = st.columns(2)
                     with col_ca:
-                        if result.citations_a:
+                        if cit_a:
                             st.markdown(f"**Sources — {short_a}**")
-                            for c in result.citations_a:
-                                with st.expander(f"Page {c.page_number}"):
+                            for c in cit_a:
+                                with st.expander(f"Page {c['page_number']}"):
                                     st.markdown(
-                                        f"<div class='citation-box'>{c.source_text}</div>",
+                                        f"<div class='citation-box'>{c['source_text']}</div>",
                                         unsafe_allow_html=True,
                                     )
                     with col_cb:
-                        if result.citations_b:
+                        if cit_b:
                             st.markdown(f"**Sources — {short_b}**")
-                            for c in result.citations_b:
-                                with st.expander(f"Page {c.page_number}"):
+                            for c in cit_b:
+                                with st.expander(f"Page {c['page_number']}"):
                                     st.markdown(
-                                        f"<div class='citation-box'>{c.source_text}</div>",
+                                        f"<div class='citation-box'>{c['source_text']}</div>",
                                         unsafe_allow_html=True,
                                     )
-                st.caption(f"Model: `{result.model_used}`")
+                st.caption(f"Model: `{raw.get('model_used', 'n/a')}`")
