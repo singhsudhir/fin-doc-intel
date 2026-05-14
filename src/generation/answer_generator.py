@@ -51,7 +51,7 @@ class AnswerGenerator:
                     "I cannot find this information in the provided documents."
                 ),
                 citations=[],
-                model_used=_ANSWER_MODEL,
+                model_used="gemini-2.5-pro",
                 chunks_used=0,
             )
 
