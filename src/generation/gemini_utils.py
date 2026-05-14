@@ -9,7 +9,7 @@ from google import genai
 
 log = structlog.get_logger()
 
-DEFAULT_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash"]
+DEFAULT_MODELS = ["gemini-2.5-flash"]
 
 
 def generate_with_fallback(
