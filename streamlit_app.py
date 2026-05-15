@@ -312,7 +312,7 @@ with tab_ask:
 
     question = st.text_input(
         "Question",
-        placeholder="What was ING's net profit in 2024?",
+        placeholder="What was ING's net profit in 2025?",
         label_visibility="collapsed",
         key="question",
     )
