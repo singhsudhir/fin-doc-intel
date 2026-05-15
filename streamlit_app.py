@@ -134,6 +134,15 @@ def _bust_doc_cache() -> None:
     _fetch_documents.clear()
 
 
+def _classify_exc(exc: Exception) -> str:
+    err = str(exc)
+    if "429" in err or "RESOURCE_EXHAUSTED" in err:
+        return f"RATE_LIMIT:{exc}"
+    if "503" in err or "UNAVAILABLE" in err:
+        return f"UNAVAILABLE:{exc}"
+    return f"ERROR:{exc}"
+
+
 def _rate_limit_message(exc: Exception) -> str:
     m = re.search(r"retryDelay.*?(\d+)s", str(exc))
     wait = int(m.group(1)) if m else 30
@@ -141,6 +150,13 @@ def _rate_limit_message(exc: Exception) -> str:
         f"**Gemini quota reached.** Please wait ~{wait} seconds and try again. "
         "If this keeps happening, check that your API key has billing enabled at "
         "[Google AI Studio](https://aistudio.google.com)."
+    )
+
+
+def _unavailable_message() -> str:
+    return (
+        "**Gemini is temporarily overloaded.** The request was retried automatically "
+        "but the service is still unavailable. Please wait a moment and try again."
     )
 
 
@@ -161,9 +177,7 @@ def _cached_query(question: str, doc_filter: str | None, top_k: int) -> dict | s
             "chunks_used": result.chunks_used,
         }
     except Exception as exc:
-        if "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc):
-            return f"RATE_LIMIT:{exc}"
-        return f"ERROR:{exc}"
+        return _classify_exc(exc)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -183,9 +197,7 @@ def _cached_compare(doc_a: str, doc_b: str, topics: tuple[str, ...]) -> dict | s
             "model_used": result.model_used,
         }
     except Exception as exc:
-        if "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc):
-            return f"RATE_LIMIT:{exc}"
-        return f"ERROR:{exc}"
+        return _classify_exc(exc)
 
 
 # ── Session state ─────────────────────────────────────────────────────────
@@ -311,6 +323,8 @@ with tab_ask:
 
         if isinstance(raw, str) and raw.startswith("RATE_LIMIT:"):
             st.warning(_rate_limit_message(raw[len("RATE_LIMIT:"):]))
+        elif isinstance(raw, str) and raw.startswith("UNAVAILABLE:"):
+            st.warning(_unavailable_message())
         elif isinstance(raw, str) and raw.startswith("ERROR:"):
             st.error(raw[len("ERROR:"):])
         else:
