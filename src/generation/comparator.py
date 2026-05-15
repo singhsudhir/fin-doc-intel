@@ -62,11 +62,12 @@ class Comparator:
         user_prompt = (
             f"Compare the two financial documents on these topics:\n{topics_md}\n\n"
             f"--- Document A: {document_name_a} ---\n"
-            f"{_build_context(chunks_a)}\n\n"
+            f"{_build_context(chunks_a, document_name_a)}\n\n"
             f"--- Document B: {document_name_b} ---\n"
-            f"{_build_context(chunks_b)}\n\n"
+            f"{_build_context(chunks_b, document_name_b)}\n\n"
             "Provide a section for each topic above. "
-            "Always cite [Document: X, Page: Y] for every claim."
+            f"Always cite sources as [Document: {document_name_a}, Page: Y] or "
+            f"[Document: {document_name_b}, Page: Y]."
         )
 
         response, model_used = generate_with_fallback(
@@ -101,11 +102,11 @@ class Comparator:
 # ------------------------------------------------------------------
 
 
-def _build_context(chunks: list[RetrievedChunk]) -> str:
+def _build_context(chunks: list[RetrievedChunk], doc_name: str) -> str:
     if not chunks:
         return "[No relevant content retrieved]"
     return "\n\n".join(
-        f"[Page {c.page_number}]\n{c.text}" for c in chunks
+        f"[Document: {doc_name}, Page {c.page_number}]\n{c.text}" for c in chunks
     )
 
 
