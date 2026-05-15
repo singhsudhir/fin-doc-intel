@@ -9,9 +9,6 @@ from pathlib import Path
 import streamlit as st
 
 # ── Inject Streamlit secrets into env before importing src modules ─────────
-# st.secrets is populated from .streamlit/secrets.toml on Streamlit Cloud.
-# load_dotenv() inside src/ modules is a no-op on Cloud (no .env file exists),
-# so we must set os.environ here for all constructors that call os.getenv().
 for _key in ("GEMINI_API_KEY", "QDRANT_URL", "QDRANT_API_KEY"):
     _val = st.secrets.get(_key)
     if _val and _key not in os.environ:
@@ -35,7 +32,18 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-[data-testid="stSidebar"] { min-width: 280px; max-width: 320px; }
+/* ── Sidebar: pull content up to top ── */
+section[data-testid="stSidebar"] > div:first-child {
+    padding-top: 1.5rem;
+}
+
+/* ── Main area: remove excessive top whitespace ── */
+.main .block-container {
+    padding-top: 1.5rem;
+    padding-bottom: 1rem;
+}
+
+/* ── Citation styling ── */
 .citation-box {
     background: #f8f9fa;
     border-left: 3px solid #2BB3B3;
@@ -44,6 +52,9 @@ st.markdown("""
     font-size: 0.85em;
     color: #444;
 }
+
+/* ── Sidebar width ── */
+[data-testid="stSidebar"] { min-width: 280px; max-width: 320px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -84,7 +95,6 @@ def _get_pipeline() -> IngestionPipeline:
 
 @st.cache_data(ttl=5)
 def _fetch_documents() -> list[dict]:
-    """Scroll Qdrant and aggregate per-document stats."""
     store = _get_store()
     try:
         if not store.client.collection_exists(store.collection_name):
@@ -125,7 +135,6 @@ def _bust_doc_cache() -> None:
 
 
 def _rate_limit_message(exc: Exception) -> str:
-    """Return a user-friendly message for Gemini 429 errors."""
     m = re.search(r"retryDelay.*?(\d+)s", str(exc))
     wait = int(m.group(1)) if m else 30
     return (
@@ -137,7 +146,6 @@ def _rate_limit_message(exc: Exception) -> str:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_query(question: str, doc_filter: str | None, top_k: int) -> dict | str:
-    """Run retrieve + generate; return a serialisable dict or an error string."""
     try:
         chunks = _get_retriever().retrieve(
             question, top_k_final=top_k, document_filter=doc_filter
@@ -160,7 +168,6 @@ def _cached_query(question: str, doc_filter: str | None, top_k: int) -> dict | s
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_compare(doc_a: str, doc_b: str, topics: tuple[str, ...]) -> dict | str:
-    """Run compare; return a serialisable dict or an error string."""
     try:
         result = _get_comparator().compare(doc_a, doc_b, list(topics))
         return {
@@ -181,12 +188,19 @@ def _cached_compare(doc_a: str, doc_b: str, topics: tuple[str, ...]) -> dict | s
         return f"ERROR:{exc}"
 
 
+# ── Session state ─────────────────────────────────────────────────────────
+
+if "upload_rev" not in st.session_state:
+    st.session_state.upload_rev = 0
+
+
 # ── Sidebar ────────────────────────────────────────────────────────────────
 
 with st.sidebar:
     st.markdown("## 📊 FinDocIntel")
+    st.divider()
 
-    # Validate that all required secrets are present
+    # Validate secrets (stop early with a clear message if any are missing)
     missing = [k for k in ("GEMINI_API_KEY", "QDRANT_URL", "QDRANT_API_KEY") if not os.environ.get(k)]
     if missing:
         st.error(
@@ -196,25 +210,21 @@ with st.sidebar:
         )
         st.stop()
 
-    # Connection status
+    # Validate Qdrant connection silently; only surface error if it fails
     try:
-        store = _get_store()
-        store.client.collection_exists(store.collection_name)
-        qdrant_dot = "🟢"
+        _get_store().client.collection_exists(_get_store().collection_name)
     except Exception as _e:
-        qdrant_dot = "🔴"
         st.error(f"Cannot connect to Qdrant: {_e}")
         st.stop()
 
-    embedder = _get_embedder()
-    model_dot = "🟢" if embedder.model else "🟡"
-    st.caption(f"{qdrant_dot} Qdrant   {model_dot} Embedding model")
-
-    st.divider()
-
     # ── Upload ─────────────────────────────────────────────────────────────
     st.markdown("### Upload PDF")
-    uploaded = st.file_uploader("Choose a PDF", type=["pdf"], label_visibility="collapsed")
+    uploaded = st.file_uploader(
+        "Choose a PDF",
+        type=["pdf"],
+        label_visibility="collapsed",
+        key=f"uploader_{st.session_state.upload_rev}",
+    )
 
     if uploaded:
         btn_label = (
@@ -223,7 +233,6 @@ with st.sidebar:
         )
         if st.button(btn_label, type="primary", use_container_width=True):
             with st.spinner("Ingesting document …"):
-                # Save with original filename so IngestionPipeline preserves it
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     tmp_path = Path(tmp_dir) / uploaded.name
                     tmp_path.write_bytes(uploaded.getvalue())
@@ -237,9 +246,10 @@ with st.sidebar:
                 if result.error:
                     st.error(f"Ingestion failed: {result.error}")
                 elif result.skipped:
-                    st.info(f"Already ingested: {uploaded.name}")
+                    st.info(f"Already indexed: {uploaded.name}")
                 else:
                     st.success(f"✅  {result.vectors_stored} chunks indexed")
+                    st.session_state.upload_rev += 1
                     _bust_doc_cache()
                     st.rerun()
 
@@ -267,7 +277,7 @@ with st.sidebar:
 # ── Main area ──────────────────────────────────────────────────────────────
 
 st.title("Financial Document Intelligence")
-st.caption("Grounded answers with page-level citations — powered by Gemini 2.5 Pro + Qdrant")
+st.caption("Grounded answers with page-level citations — powered by Gemini 2.5 Flash + Qdrant")
 
 docs = _fetch_documents()
 doc_names = [d["document_name"] for d in docs]
